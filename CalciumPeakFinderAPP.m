@@ -23,12 +23,16 @@ classdef CalciumPeakFinderAPP < matlab.apps.AppBase
         MinPeakProminenceEditField matlab.ui.control.NumericEditField
         MinPeakDistanceLabel     matlab.ui.control.Label
         MinPeakDistanceEditField matlab.ui.control.NumericEditField
+        SmoothDataCheckBox       matlab.ui.control.CheckBox
+        SmoothWindowLabel        matlab.ui.control.Label
+        SmoothWindowEditField    matlab.ui.control.NumericEditField
         UIAxes                   matlab.ui.control.UIAxes
     end
     
     % Properties that store app data
     properties (Access = public)
-        dff_sig                  % Loaded dF/F data
+        dff_sig                  % Loaded dF/F data (original)
+        dff_sig_smoothed         % Smoothed dF/F data
         time_vector              % Time vector for plotting
         framerate = 3.61         % Default framerate, updated from UI
         results                  % Structure to store analysis results
@@ -43,6 +47,8 @@ classdef CalciumPeakFinderAPP < matlab.apps.AppBase
         panStartPoint            % Starting mouse position for panning
         currentPlotHandles       % Handles to plotted objects
         crosshairHandles         % Handles for crosshair lines and marker
+        smooth_data = true      % Whether to apply smoothing
+        smooth_window_sec = 1    % Smoothing window in seconds
     end
     
     methods (Access = private)
@@ -97,20 +103,6 @@ classdef CalciumPeakFinderAPP < matlab.apps.AppBase
             if ~app.isPanning
                 return;
             end
-            % currentPoint = app.UIAxes.CurrentPoint;
-            % mouse_x = currentPoint(1,1);
-            % delta_x = app.panStartPoint - mouse_x;
-            % curXLim = app.UIAxes.XLim;
-            % newXLim = curXLim + delta_x;
-            % min_time = min(app.time_vector);
-            % max_time = max(app.time_vector);
-            % if newXLim(1) < min_time
-            %     newXLim = [min_time, min_time + (curXLim(2) - curXLim(1))];
-            % elseif newXLim(2) > max_time
-            %     newXLim = [max_time - (curXLim(2) - curXLim(1)), max_time];
-            % end
-            % app.UIAxes.XLim = newXLim;
-            % app.panStartPoint = mouse_x;
         end
         
         % Stop panning
@@ -150,6 +142,23 @@ classdef CalciumPeakFinderAPP < matlab.apps.AppBase
             setupScrollWheelZoom(app);
         end
         
+        % Apply smoothing to data
+        function applySmoothing(app)
+            if app.smooth_data && ~isempty(app.dff_sig)
+                num_neurons = size(app.dff_sig, 1);
+                app.dff_sig_smoothed = zeros(size(app.dff_sig));
+                window_frames = round(app.smooth_window_sec * app.framerate);
+                if mod(window_frames, 2) == 0
+                    window_frames = window_frames + 1; % Ensure odd window size
+                end
+                for n = 1:num_neurons
+                    app.dff_sig_smoothed(n, :) = smoothdata(app.dff_sig(n, :), 'movmean', window_frames);
+                end
+            else
+                app.dff_sig_smoothed = app.dff_sig;
+            end
+        end
+        
         % Update plot display
         function UpdatePlot(app)
             if isempty(app.dff_sig) || isempty(app.results) || app.current_neuron_id > length(app.results)
@@ -164,7 +173,7 @@ classdef CalciumPeakFinderAPP < matlab.apps.AppBase
             cla(app.UIAxes);
             hold(app.UIAxes, 'on');
             neuron_id = app.current_neuron_id;
-            trace = app.dff_sig(neuron_id, :);
+            trace = app.dff_sig_smoothed(neuron_id, :); % Use smoothed data
             app.currentPlotHandles.trace = plot(app.UIAxes, app.time_vector, trace, 'b-', 'LineWidth', 1.5, 'DisplayName', 'Calcium Signal');
             app.UIAxes.XLim = [min(app.time_vector) max(app.time_vector)];
             y_min = min(trace) - 0.1 * (max(trace) - min(trace));
@@ -174,6 +183,9 @@ classdef CalciumPeakFinderAPP < matlab.apps.AppBase
             peak_values = app.results(neuron_id).peak_values;
             plotTitle = sprintf('Neuron %d - %d spikes, Freq: %.2f ev/min', ...
                 neuron_id, app.results(neuron_id).num_spikes, app.results(neuron_id).calcium_event_frequency);
+            if app.smooth_data
+                plotTitle = [plotTitle, sprintf(' (Smoothed, Window: %.2fs)', app.smooth_window_sec)];
+            end
             if ~isempty(peak_indices)
                 app.currentPlotHandles.peaks = scatter(app.UIAxes, app.time_vector(peak_indices), peak_values, ...
                     'ro', 'MarkerFaceColor', 'r', 'DisplayName', 'Detected Peaks', 'SizeData', 60);
@@ -239,7 +251,7 @@ classdef CalciumPeakFinderAPP < matlab.apps.AppBase
             else
                 [~, nearest_idx] = min(abs(app.time_vector - mouse_x));
                 nearest_time = app.time_vector(nearest_idx);
-                nearest_value = app.dff_sig(app.current_neuron_id, nearest_idx);
+                nearest_value = app.dff_sig_smoothed(app.current_neuron_id, nearest_idx); % Use smoothed data
                 marker_color = 'g';
             end
             if isfield(app.crosshairHandles, 'vline') && isvalid(app.crosshairHandles.vline)
@@ -294,7 +306,7 @@ classdef CalciumPeakFinderAPP < matlab.apps.AppBase
                 return;
             end
             [~, new_peak_idx] = min(abs(app.time_vector - mouse_x));
-            new_peak_val = app.dff_sig(app.current_neuron_id, new_peak_idx);
+            new_peak_val = app.dff_sig_smoothed(app.current_neuron_id, new_peak_idx); % Use smoothed data
             neuron_name_str = sprintf('neuron_%d', app.current_neuron_id);
             current_peaks_idx = app.results(app.current_neuron_id).peak_indices;
             current_peaks_val = app.results(app.current_neuron_id).peak_values;
@@ -329,7 +341,6 @@ classdef CalciumPeakFinderAPP < matlab.apps.AppBase
                         app.neuron_data.(neuron_name_str).peak_widths = app.results(app.current_neuron_id).peak_widths;
                     end
                 end
-
                 RecalculateNeuronStats(app, app.current_neuron_id);
                 UpdatePlot(app);
             else
@@ -395,6 +406,7 @@ classdef CalciumPeakFinderAPP < matlab.apps.AppBase
         % Startup function
         function startupFcn(app)
             assignin('base', 'app', app);
+
             app.RunAnalysisButton.Enable = 'off';
             app.NeuronDropDown.Enable = 'off';
             app.PreviousNeuronButton.Enable = 'off';
@@ -409,6 +421,8 @@ classdef CalciumPeakFinderAPP < matlab.apps.AppBase
             app.MinPeakHeightEditField.Value = app.min_peak_height;
             app.MinPeakProminenceEditField.Value = app.min_peak_prominence;
             app.MinPeakDistanceEditField.Value = app.min_peak_distance_sec;
+            app.SmoothDataCheckBox.Value = app.smooth_data;
+            app.SmoothWindowEditField.Value = app.smooth_window_sec;
             setupScrollWheelZoom(app);
         end
         
@@ -470,6 +484,7 @@ classdef CalciumPeakFinderAPP < matlab.apps.AppBase
                 end
                 [num_neurons, num_frames] = size(app.dff_sig);
                 app.time_vector = (1:num_frames) / app.framerate;
+                applySmoothing(app); % Apply smoothing after loading data
                 app.RunAnalysisButton.Enable = 'on';
                 app.NeuronDropDown.Enable = 'off';
                 app.PreviousNeuronButton.Enable = 'off';
@@ -488,6 +503,7 @@ classdef CalciumPeakFinderAPP < matlab.apps.AppBase
             catch ME
                 uialert(app.UIFigure, ['Error loading data: ' ME.message char(10) ME.getReport('basic')], 'Load Error');
                 app.dff_sig = [];
+                app.dff_sig_smoothed = [];
                 app.RunAnalysisButton.Enable = 'off';
             end
         end
@@ -502,6 +518,8 @@ classdef CalciumPeakFinderAPP < matlab.apps.AppBase
             app.min_peak_height = app.MinPeakHeightEditField.Value;
             app.min_peak_prominence = app.MinPeakProminenceEditField.Value;
             app.min_peak_distance_sec = app.MinPeakDistanceEditField.Value;
+            app.smooth_data = app.SmoothDataCheckBox.Value;
+            app.smooth_window_sec = app.SmoothWindowEditField.Value;
             if app.min_peak_height <= 0
                 uialert(app.UIFigure, 'Minimum Peak Height must be positive.', 'Parameter Error');
                 return;
@@ -514,6 +532,11 @@ classdef CalciumPeakFinderAPP < matlab.apps.AppBase
                 uialert(app.UIFigure, 'Minimum Peak Distance must be positive.', 'Parameter Error');
                 return;
             end
+            if app.smooth_data && app.smooth_window_sec <= 0
+                uialert(app.UIFigure, 'Smoothing window must be positive.', 'Parameter Error');
+                return;
+            end
+            applySmoothing(app); % Apply smoothing before analysis
             progDlg = uiprogressdlg(app.UIFigure, 'Title', 'Analyzing Data', 'Message', 'Initializing...', 'Indeterminate', 'off', 'Cancelable', 'on');
             [num_neurons, num_frames] = size(app.dff_sig);
             min_peak_dist_frames = app.min_peak_distance_sec * app.framerate;
@@ -531,7 +554,7 @@ classdef CalciumPeakFinderAPP < matlab.apps.AppBase
                 end
                 progDlg.Message = sprintf('Processing Neuron %d/%d', n, num_neurons);
                 progDlg.Value = n / num_neurons;
-                trace = app.dff_sig(n, :);
+                trace = app.dff_sig_smoothed(n, :); % Use smoothed data
                 baseline = prctile(trace, 30);
                 [peak_values, peak_indices, peak_widths_frames, peak_prominences] = findpeaks(trace, ...
                     'MinPeakHeight', app.min_peak_height, ...
@@ -557,7 +580,7 @@ classdef CalciumPeakFinderAPP < matlab.apps.AppBase
                     end
                     if left_idx > 1 && trace(left_idx) <= half_max && trace(left_idx-1) > half_max && ...
                             right_idx < num_frames && trace(right_idx) <= half_max && trace(right_idx+1) > half_max
-                        y1 = trace(left_idx-1); y2 = trace(left_idx);
+                        y1 = trace(left_idx- Updating1); y2 = trace(left_idx);
                         x1_frame = left_idx-1; x2_frame = left_idx;
                         left_cross_frame = x1_frame + (half_max - y1) * (x2_frame - x1_frame) / (y2 - y1);
                         y1 = trace(right_idx); y2 = trace(right_idx+1);
@@ -607,7 +630,6 @@ classdef CalciumPeakFinderAPP < matlab.apps.AppBase
             app.SaveResultsButton.Enable = 'on';
             delete(progDlg);
             UpdatePlot(app);
-            uialert(app.UIFigure, 'Analysis complete.', 'Analysis Success');
         end
         
         % Neuron dropdown value changed
@@ -688,9 +710,12 @@ classdef CalciumPeakFinderAPP < matlab.apps.AppBase
             neuron_data = app.neuron_data;
             time_vector = app.time_vector;
             framerate = app.framerate;
+            smooth_data = app.smooth_data;
+            smooth_window_sec = app.smooth_window_sec;
             analysis_date = datestr(now);
             try
-                save(fullPathMat, 'results', 'neuron_data', 'time_vector', 'framerate', 'analysis_date', '-v7.3');
+                save(fullPathMat, 'results', 'neuron_data', 'time_vector', 'framerate', ...
+                    'smooth_data', 'smooth_window_sec', 'analysis_date', '-v7.3');
                 num_neurons = length(results);
                 mean_fwhm = zeros(1, num_neurons);
                 for n_idx = 1:num_neurons
@@ -711,6 +736,28 @@ classdef CalciumPeakFinderAPP < matlab.apps.AppBase
                 uialert(app.UIFigure, sprintf('Results saved to:\n%s\n%s', fullPathMat, fullPathCsv), 'Save Success','Icon','success');
             catch ME
                 uialert(app.UIFigure, ['Error saving results: ' ME.message], 'Save Error');
+            end
+        end
+        
+        % Smooth data checkbox value changed
+        function SmoothDataCheckBoxValueChanged(app, event)
+            app.smooth_data = app.SmoothDataCheckBox.Value;
+            applySmoothing(app);
+            if ~isempty(app.dff_sig)
+                RunAnalysisButtonPushed(app, event); % Re-run analysis with new smoothing settings
+            end
+            UpdatePlot(app);
+        end
+        
+        % Smooth window edit field value changed
+        function SmoothWindowEditFieldValueChanged(app, event)
+            app.smooth_window_sec = app.SmoothWindowEditField.Value;
+            if app.smooth_data
+                applySmoothing(app);
+                if ~isempty(app.dff_sig)
+                    RunAnalysisButtonPushed(app, event); % Re-run analysis with new smoothing settings
+                end
+                UpdatePlot(app);
             end
         end
     end
@@ -747,62 +794,77 @@ classdef CalciumPeakFinderAPP < matlab.apps.AppBase
             % Peak Detection Parameters Panel
             app.PeakDetectionParametersPanel = uipanel(app.UIFigure);
             app.PeakDetectionParametersPanel.Title = 'Peak Detection Parameters';
-            app.PeakDetectionParametersPanel.Position = [20 430 300 140];
+            app.PeakDetectionParametersPanel.Position = [20 400 300 170];
             app.MinPeakHeightLabel = uilabel(app.PeakDetectionParametersPanel);
             app.MinPeakHeightLabel.HorizontalAlignment = 'right';
-            app.MinPeakHeightLabel.Position = [10 90 100 22];
+            app.MinPeakHeightLabel.Position = [10 120 100 22];
             app.MinPeakHeightLabel.Text = 'Min Peak Height:';
             app.MinPeakHeightEditField = uieditfield(app.PeakDetectionParametersPanel, 'numeric');
             app.MinPeakHeightEditField.ValueDisplayFormat = '%.2f';
-            app.MinPeakHeightEditField.Position = [120 90 100 22];
+            app.MinPeakHeightEditField.Position = [120 120 100 22];
             app.MinPeakHeightEditField.Value = app.min_peak_height;
             app.MinPeakProminenceLabel = uilabel(app.PeakDetectionParametersPanel);
             app.MinPeakProminenceLabel.HorizontalAlignment = 'right';
-            app.MinPeakProminenceLabel.Position = [10 60 100 22];
+            app.MinPeakProminenceLabel.Position = [10 90 100 22];
             app.MinPeakProminenceLabel.Text = 'Min Prominence:';
             app.MinPeakProminenceEditField = uieditfield(app.PeakDetectionParametersPanel, 'numeric');
             app.MinPeakProminenceEditField.ValueDisplayFormat = '%.2f';
-            app.MinPeakProminenceEditField.Position = [120 60 100 22];
+            app.MinPeakProminenceEditField.Position = [120 90 100 22];
             app.MinPeakProminenceEditField.Value = app.min_peak_prominence;
             app.MinPeakDistanceLabel = uilabel(app.PeakDetectionParametersPanel);
             app.MinPeakDistanceLabel.HorizontalAlignment = 'right';
-            app.MinPeakDistanceLabel.Position = [10 30 100 22];
+            app.MinPeakDistanceLabel.Position = [10 60 100 22];
             app.MinPeakDistanceLabel.Text = 'Min Distance (s):';
             app.MinPeakDistanceEditField = uieditfield(app.PeakDetectionParametersPanel, 'numeric');
             app.MinPeakDistanceEditField.ValueDisplayFormat = '%.2f';
-            app.MinPeakDistanceEditField.Position = [120 30 100 22];
+            app.MinPeakDistanceEditField.Position = [120 60 100 22];
             app.MinPeakDistanceEditField.Value = app.min_peak_distance_sec;
+            app.SmoothDataCheckBox = uicheckbox(app.PeakDetectionParametersPanel);
+            app.SmoothDataCheckBox.ValueChangedFcn = createCallbackFcn(app, @SmoothDataCheckBoxValueChanged, true);
+            app.SmoothDataCheckBox.Value = true;
+            app.SmoothDataCheckBox.Text = 'Smooth Data';
+            app.SmoothDataCheckBox.Enable = 'off';
+            app.SmoothDataCheckBox.Position = [10 30 100 22];
+            app.SmoothWindowLabel = uilabel(app.PeakDetectionParametersPanel);
+            app.SmoothWindowLabel.HorizontalAlignment = 'right';
+            app.SmoothWindowLabel.Position = [120 30 80 22];
+            app.SmoothWindowLabel.Text = 'Window (s):';
+            app.SmoothWindowEditField = uieditfield(app.PeakDetectionParametersPanel, 'numeric');
+            app.SmoothWindowEditField.ValueChangedFcn = createCallbackFcn(app, @SmoothWindowEditFieldValueChanged, true);
+            app.SmoothWindowEditField.ValueDisplayFormat = '%.2f';
+            app.SmoothWindowEditField.Position = [210 30 60 22];
+            app.SmoothWindowEditField.Value = app.smooth_window_sec;
             
             % Neuron Display & Filtering Panel
             app.NeuronDisplayFilteringPanel = uipanel(app.UIFigure);
             app.NeuronDisplayFilteringPanel.Title = 'Neuron Display & Filtering';
-            app.NeuronDisplayFilteringPanel.Position = [20 50 300 370];
+            app.NeuronDisplayFilteringPanel.Position = [20 50 300 340];
             app.SelectNeuronLabel = uilabel(app.NeuronDisplayFilteringPanel);
             app.SelectNeuronLabel.HorizontalAlignment = 'right';
-            app.SelectNeuronLabel.Position = [10 320 85 22];
+            app.SelectNeuronLabel.Position = [10 290 85 22];
             app.SelectNeuronLabel.Text = 'Select Neuron:';
             app.NeuronDropDown = uidropdown(app.NeuronDisplayFilteringPanel);
             app.NeuronDropDown.ValueChangedFcn = createCallbackFcn(app, @NeuronDropDownValueChanged, true);
-            app.NeuronDropDown.Position = [105 320 170 22];
+            app.NeuronDropDown.Position = [105 290 170 22];
             app.PreviousNeuronButton = uibutton(app.NeuronDisplayFilteringPanel, 'push');
             app.PreviousNeuronButton.ButtonPushedFcn = createCallbackFcn(app, @PreviousNeuronButtonPushed, true);
-            app.PreviousNeuronButton.Position = [10 290 85 22];
+            app.PreviousNeuronButton.Position = [10 260 85 22];
             app.PreviousNeuronButton.Text = 'Previous';
             app.NextNeuronButton = uibutton(app.NeuronDisplayFilteringPanel, 'push');
             app.NextNeuronButton.ButtonPushedFcn = createCallbackFcn(app, @NextNeuronButtonPushed, true);
-            app.NextNeuronButton.Position = [105 290 85 22];
+            app.NextNeuronButton.Position = [105 260 85 22];
             app.NextNeuronButton.Text = 'Next';
             app.AddPeakButtonClickPlotButton = uibutton(app.NeuronDisplayFilteringPanel, 'push');
             app.AddPeakButtonClickPlotButton.ButtonPushedFcn = createCallbackFcn(app, @AddPeakButtonClickPlotButtonPushed, true);
-            app.AddPeakButtonClickPlotButton.Position = [10 260 170 22];
+            app.AddPeakButtonClickPlotButton.Position = [10 230 170 22];
             app.AddPeakButtonClickPlotButton.Text = 'Add Peak (Press Enter)';
             app.DeletePeakClickPeakButton = uibutton(app.NeuronDisplayFilteringPanel, 'push');
             app.DeletePeakClickPeakButton.ButtonPushedFcn = createCallbackFcn(app, @DeletePeakClickPeakButtonPushed, true);
-            app.DeletePeakClickPeakButton.Position = [10 230 170 22];
+            app.DeletePeakClickPeakButton.Position = [10 200 170 22];
             app.DeletePeakClickPeakButton.Text = 'Delete Peak (Press Enter)';
             app.SaveResultsButton = uibutton(app.NeuronDisplayFilteringPanel, 'push');
             app.SaveResultsButton.ButtonPushedFcn = createCallbackFcn(app, @SaveResultsButtonPushed, true);
-            app.SaveResultsButton.Position = [10 200 100 22];
+            app.SaveResultsButton.Position = [10 170 100 22];
             app.SaveResultsButton.Text = 'Save Results';
             
             % UIAxes
